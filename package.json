@@ -1,0 +1,62 @@
+{
+  "name": "sunderplace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "wrangler dev --port 8787",
+    "dev:full": "wrangler d1 migrations apply sunderplace --local && concurrently -k \"vite\" \"wrangler dev --port 8787 --inspector-port 9230\"",
+    "build": "tsc --noEmit -p tsconfig.app.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "ingest": "tsx scripts/ingest.ts",
+    "seed:sql": "tsx scripts/generate-seed-sql.ts",
+    "db:migrate:local": "wrangler d1 migrations apply sunderplace --local"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.3.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.44.4",
+    "hono": "^4.9.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.18.1",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260820.1",
+    "@eslint/js": "^9.39.5",
+    "@tailwindcss/vite": "^4.3.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "concurrently": "^9.2.0",
+    "drizzle-kit": "^0.31.4",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "globals": "^16.5.0",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.3.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.63.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7",
+    "wrangler": "^4.28.0"
+  }
+}

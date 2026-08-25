@@ -1,0 +1,19 @@
+name = "sunderplace"
+main = "worker/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_URL = "http://127.0.0.1:5173"
+SESSION_SECRET = "dev-session-secret-change-me"
+ALLOW_DEV_LOGIN = "1"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sunderplace"
+database_id = "local-sunderplace"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "sunderplace-audio"

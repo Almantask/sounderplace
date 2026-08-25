@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Source Sans 3', 'Segoe UI', sans-serif;
+  --font-display: 'Cormorant Garamond', Georgia, serif;
+  --color-ink: #f0e6d8;
+  --color-muted: #c4b8a8;
+  --color-leather: #1a1410;
+  --color-panel: #2a2118;
+  --color-gold: #c4a574;
+  --color-gold-bright: #e4c790;
+  --color-line: #4a3c2e;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 20% -10%, #3a2a18 0%, var(--color-leather) 55%);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display);
+}
