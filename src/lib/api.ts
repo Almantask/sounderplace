@@ -1,10 +1,15 @@
-import type { PackDetail, PackSummary, SessionUser } from '@shared/types'
+import type { AdminPackDetail, AdminPackSummary, PackDetail, PackSummary, SessionUser } from '@shared/types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
+  if (!isFormData && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
   const response = await fetch(path, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
+    headers,
   })
   const data = (await response.json().catch(() => ({}))) as T & { error?: string }
   if (!response.ok) {
@@ -58,4 +63,32 @@ export const api = {
     }>('/api/ecosystem'),
   sendFeedback: (body: { name?: string; email?: string; category?: string; message: string }) =>
     request<{ ok: true }>('/api/feedback', { method: 'POST', body: JSON.stringify(body) }),
+  adminPacks: () => request<{ packs: AdminPackSummary[] }>('/api/admin/packs'),
+  adminPack: (slug: string) => request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}`),
+  createAdminPack: (body: Record<string, unknown>) =>
+    request<{ pack: AdminPackDetail }>('/api/admin/packs', { method: 'POST', body: JSON.stringify(body) }),
+  updateAdminPack: (slug: string, body: Record<string, unknown>) =>
+    request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteAdminPack: (slug: string) =>
+    request<{ ok: true }>(`/api/admin/packs/${slug}`, { method: 'DELETE' }),
+  createAdminTrack: (slug: string, body: Record<string, unknown>) =>
+    request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}/tracks`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteAdminTrack: (slug: string, trackId: string) =>
+    request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}/tracks/${trackId}`, { method: 'DELETE' }),
+  uploadAdminTrackAudio: (slug: string, trackId: string, file: File) => {
+    const form = new FormData()
+    form.set('file', file)
+    return request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}/tracks/${trackId}/audio`, {
+      method: 'PUT',
+      body: form,
+    })
+  },
+  uploadAdminPackArchive: (slug: string, file: File) => {
+    const form = new FormData()
+    form.set('file', file)
+    return request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}/archive`, { method: 'PUT', body: form })
+  },
 }

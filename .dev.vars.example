@@ -6,3 +6,6 @@ ALLOW_DEV_LOGIN=1
 # GITHUB_CLIENT_ID=
 # GITHUB_CLIENT_SECRET=
 # OPERATOR_TOKEN=
+# Comma-separated operator emails that can open /admin.
+# If unset and ALLOW_DEV_LOGIN=1, any signed-in user can manage the catalog locally.
+# ADMIN_EMAILS=you@example.com

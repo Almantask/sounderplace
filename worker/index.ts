@@ -14,6 +14,20 @@ import {
 } from './auth.ts'
 import type { Env } from './env.ts'
 import {
+  adminGate,
+  createAdminPack,
+  createAdminTrack,
+  deleteAdminPack,
+  deleteAdminTrack,
+  getAdminPack,
+  listAdminPacks,
+  readUploadFile,
+  sessionUser,
+  storePackArchive,
+  storeTrackAudio,
+  updateAdminPack,
+} from './lib/admin.ts'
+import {
   entitledToVersion,
   featuredPackIds,
   getEntitlement,
@@ -65,7 +79,7 @@ app.get('/api/ecosystem', (c) =>
 
 app.get('/api/session', (c) => {
   const user = c.get('user')
-  return c.json({ user })
+  return c.json({ user: user ? sessionUser(user, c.env) : null })
 })
 
 app.post('/api/auth/sign-up', async (c) => {
@@ -76,7 +90,7 @@ app.post('/api/auth/sign-up', async (c) => {
   const user = await createUser(c.env, { email: body.email, name: body.name, password: body.password })
   const token = await createSession(c.env, user.id, c.req.raw)
   c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
-  return c.json({ user })
+  return c.json({ user: sessionUser(user, c.env) })
 })
 
 app.post('/api/auth/sign-in', async (c) => {
@@ -94,7 +108,7 @@ app.post('/api/auth/sign-in', async (c) => {
   }
   const token = await createSession(c.env, row.id, c.req.raw)
   c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
-  return c.json({ user: { id: row.id, email: row.email, name: row.name } })
+  return c.json({ user: sessionUser({ id: row.id, email: row.email, name: row.name }, c.env) })
 })
 
 app.post('/api/auth/sign-out', (c) => {
@@ -158,6 +172,89 @@ app.get('/api/auth/github/callback', async (c) => {
   const token = await createSession(c.env, user.id, c.req.raw)
   c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
   return c.redirect(`${c.env.APP_URL}/library`)
+})
+
+function requireAdmin(c: { get: (key: 'user') => AuthUser | null; env: Env; req: { raw: Request }; json: (data: unknown, status?: number) => Response }) {
+  const gate = adminGate(c.get('user'), c.env, c.req.raw)
+  if (!gate.ok) return jsonError(c, gate.error, gate.status)
+  return null
+}
+
+app.get('/api/admin/packs', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  return c.json({ packs: await listAdminPacks(c.env) })
+})
+
+app.get('/api/admin/packs/:slug', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const pack = await getAdminPack(c.env, c.req.param('slug'))
+  if (!pack) return jsonError(c, 'Pack not found', 404)
+  return c.json({ pack })
+})
+
+app.post('/api/admin/packs', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const body = await c.req.json().catch(() => ({}))
+  const result = await createAdminPack(c.env, body)
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack }, 201)
+})
+
+app.patch('/api/admin/packs/:slug', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const body = await c.req.json().catch(() => ({}))
+  const result = await updateAdminPack(c.env, c.req.param('slug'), body)
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack })
+})
+
+app.delete('/api/admin/packs/:slug', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const result = await deleteAdminPack(c.env, c.req.param('slug'))
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ ok: true })
+})
+
+app.post('/api/admin/packs/:slug/tracks', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const body = await c.req.json().catch(() => ({}))
+  const result = await createAdminTrack(c.env, c.req.param('slug'), body)
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack }, 201)
+})
+
+app.delete('/api/admin/packs/:slug/tracks/:trackId', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const result = await deleteAdminTrack(c.env, c.req.param('slug'), c.req.param('trackId'))
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack })
+})
+
+app.put('/api/admin/packs/:slug/tracks/:trackId/audio', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const file = await readUploadFile(await c.req.formData())
+  if (!file) return jsonError(c, 'Audio file is required')
+  const result = await storeTrackAudio(c.env, c.req.param('slug'), c.req.param('trackId'), file)
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack })
+})
+
+app.put('/api/admin/packs/:slug/archive', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  const file = await readUploadFile(await c.req.formData())
+  if (!file) return jsonError(c, 'Archive file is required')
+  const result = await storePackArchive(c.env, c.req.param('slug'), file)
+  if (result.error) return jsonError(c, result.error, result.status)
+  return c.json({ pack: result.pack })
 })
 
 app.get('/api/packs', async (c) => {

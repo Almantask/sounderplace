@@ -48,6 +48,7 @@ export function AppShell() {
             <NavItem to="/library">Library</NavItem>
             <NavItem to="/ecosystem">Ecosystem</NavItem>
             <NavItem to="/feedback">Feedback</NavItem>
+            {user?.isAdmin ? <NavItem to="/admin">Admin</NavItem> : null}
             {user ? (
               <Button
                 variant="outline"

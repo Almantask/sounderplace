@@ -1,5 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
+import { AdminPackPage } from '@/pages/AdminPackPage'
+import { AdminPage } from '@/pages/AdminPage'
 import { CatalogPage } from '@/pages/CatalogPage'
 import { EcosystemPage } from '@/pages/EcosystemPage'
 import { FeedbackPage } from '@/pages/FeedbackPage'
@@ -17,6 +19,8 @@ export function App() {
         <Route path="/library" element={<LibraryPage />} />
         <Route path="/ecosystem" element={<EcosystemPage />} />
         <Route path="/feedback" element={<FeedbackPage />} />
+        <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin/packs/:slug" element={<AdminPackPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -52,6 +52,41 @@ export interface SessionUser {
   id: string
   email: string
   name: string
+  isAdmin?: boolean
+}
+
+export interface AdminPackSummary {
+  id: string
+  slug: string
+  title: string
+  description: string
+  kind: PackKind
+  category: string
+  listingStatus: ListingStatus
+  priceSnapshotCents: number
+  priceUpdatePassCents: number
+  featuredEligible: boolean
+  trackCount: number
+  currentVersion: string
+  updatedAt: number
+}
+
+export interface AdminTrack {
+  id: string
+  name: string
+  durationSeconds: number
+  sortOrder: number
+  moods: string[]
+  instruments: string[]
+  hasFullAudio: boolean
+  hasPreviewAudio: boolean
+  previewUrl: string | null
+}
+
+export interface AdminPackDetail extends AdminPackSummary {
+  changelog: string
+  reviewNotes: string | null
+  tracks: AdminTrack[]
 }
 
 export const AI_DISCLOSURE =

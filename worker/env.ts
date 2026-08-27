@@ -11,6 +11,7 @@ export interface Env {
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   OPERATOR_TOKEN?: string
+  ADMIN_EMAILS?: string
   ALLOW_DEV_LOGIN?: string
   DONATE_CENTS?: string
 }
