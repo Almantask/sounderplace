@@ -216,3 +216,19 @@ export const listingReviews = sqliteTable('listing_reviews', {
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
 })
+
+export const feedback = sqliteTable(
+  'feedback',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+    name: text('name'),
+    email: text('email'),
+    category: text('category', { enum: ['bug', 'idea', 'question', 'other'] })
+      .notNull()
+      .default('other'),
+    message: text('message').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [index('feedback_created_at_idx').on(table.createdAt)],
+)
