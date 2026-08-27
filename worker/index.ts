@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { parseFeedback } from '../shared/feedback.ts'
 import { checkoutKind, isFreePack, upgradeDeltaCents } from '../shared/pricing.ts'
 import { ECOSYSTEM_LINKS } from '../shared/starter-library.ts'
 import {
@@ -286,6 +287,28 @@ app.post('/api/checkout', async (c) => {
     'metadata[version]': pack.currentVersion,
   })
   return c.json({ url: session.url })
+})
+
+app.post('/api/feedback', async (c) => {
+  const body = await c.req.json<{ name?: string; email?: string; category?: string; message?: string }>().catch(() => ({}))
+  const parsed = parseFeedback(body)
+  if (!parsed.ok) return jsonError(c, parsed.error)
+  const user = c.get('user')
+  await c.env.DB.prepare(
+    `INSERT INTO feedback (id, user_id, name, email, category, message, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      user?.id ?? null,
+      parsed.value.name,
+      parsed.value.email,
+      parsed.value.category,
+      parsed.value.message,
+      Date.now(),
+    )
+    .run()
+  return c.json({ ok: true })
 })
 
 app.post('/api/donate', async (c) => {

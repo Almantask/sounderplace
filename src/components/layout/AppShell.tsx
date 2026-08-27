@@ -47,6 +47,7 @@ export function AppShell() {
             <NavItem to="/catalog">Catalog</NavItem>
             <NavItem to="/library">Library</NavItem>
             <NavItem to="/ecosystem">Ecosystem</NavItem>
+            <NavItem to="/feedback">Feedback</NavItem>
             {user ? (
               <Button
                 variant="outline"

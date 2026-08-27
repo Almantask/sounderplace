@@ -56,4 +56,6 @@ export const api = {
       links: Array<{ name: string; href: string; blurb: string }>
       donate: { defaultCents: number; githubSponsors: string; kofi: string }
     }>('/api/ecosystem'),
+  sendFeedback: (body: { name?: string; email?: string; category?: string; message: string }) =>
+    request<{ ok: true }>('/api/feedback', { method: 'POST', body: JSON.stringify(body) }),
 }
