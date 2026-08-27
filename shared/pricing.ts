@@ -9,6 +9,16 @@ export function upgradeDeltaCents(priceSnapshotCents: number, priceUpdatePassCen
   return priceUpdatePassCents - priceSnapshotCents
 }
 
+export function licenseUnitAmount(options: {
+  license: 'snapshot' | 'update_pass' | 'upgrade'
+  snapshotCents: number
+  updatePassCents: number
+}): number {
+  if (options.license === 'snapshot') return options.snapshotCents
+  if (options.license === 'update_pass') return options.updatePassCents
+  return upgradeDeltaCents(options.snapshotCents, options.updatePassCents)
+}
+
 export function formatUsd(cents: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100)
 }

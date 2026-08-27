@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkoutKind, formatUsd, isFreePack, upgradeDeltaCents } from './pricing.ts'
+import { checkoutKind, formatUsd, isFreePack, licenseUnitAmount, upgradeDeltaCents } from './pricing.ts'
 
 describe('pricing', () => {
   it('treats zero snapshot and update-pass prices as free', () => {
@@ -11,6 +11,12 @@ describe('pricing', () => {
   it('computes the snapshot-to-update-pass upgrade as Y minus X', () => {
     expect(upgradeDeltaCents(900, 1400)).toBe(500)
     expect(upgradeDeltaCents(0, 0)).toBe(0)
+  })
+
+  it('prices snapshot, update-pass, and upgrade from catalog cents', () => {
+    expect(licenseUnitAmount({ license: 'snapshot', snapshotCents: 900, updatePassCents: 1400 })).toBe(900)
+    expect(licenseUnitAmount({ license: 'update_pass', snapshotCents: 900, updatePassCents: 1400 })).toBe(1400)
+    expect(licenseUnitAmount({ license: 'upgrade', snapshotCents: 900, updatePassCents: 1400 })).toBe(500)
   })
 
   it('rejects an update-pass cheaper than the snapshot', () => {

@@ -27,7 +27,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, email, password }),
     }),
-  signOut: () => request<{ ok: boolean }>('/api/auth/sign-out', { method: 'POST' }),
+  signOut: (options?: { all?: boolean }) =>
+    request<{ ok: boolean }>('/api/auth/sign-out', {
+      method: 'POST',
+      body: JSON.stringify({ all: options?.all === true }),
+    }),
   packs: (params: URLSearchParams) => request<{ packs: PackSummary[] }>(`/api/packs?${params}`),
   featured: () => request<{ packs: PackSummary[] }>('/api/featured'),
   pack: (slug: string) =>

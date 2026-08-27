@@ -7,5 +7,6 @@ ALLOW_DEV_LOGIN=1
 # GITHUB_CLIENT_SECRET=
 # OPERATOR_TOKEN=
 # Comma-separated operator emails that can open /admin.
-# If unset and ALLOW_DEV_LOGIN=1, any signed-in user can manage the catalog locally.
+# If unset, ALLOW_DEV_LOGIN=1 only elevates signed-in users when APP_URL *and* the request host are localhost/127.0.0.1.
+# Production admin requires a verified GitHub email in this list, or OPERATOR_TOKEN.
 # ADMIN_EMAILS=you@example.com

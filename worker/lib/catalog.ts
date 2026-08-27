@@ -23,7 +23,34 @@ export async function listPacks(env: Env, url: URL) {
                   SELECT version FROM pack_versions pv2
                   WHERE pv2.pack_id = p.id
                   ORDER BY published_at DESC LIMIT 1
-                )) as track_count
+                )) as track_count,
+            (SELECT t.id FROM tracks t
+               JOIN pack_versions pv ON pv.id = t.pack_version_id
+              WHERE pv.pack_id = p.id
+                AND pv.version = (
+                  SELECT version FROM pack_versions pv2
+                  WHERE pv2.pack_id = p.id
+                  ORDER BY published_at DESC LIMIT 1
+                )
+              ORDER BY t.sort_order ASC LIMIT 1) as preview_track_id,
+            (SELECT t.name FROM tracks t
+               JOIN pack_versions pv ON pv.id = t.pack_version_id
+              WHERE pv.pack_id = p.id
+                AND pv.version = (
+                  SELECT version FROM pack_versions pv2
+                  WHERE pv2.pack_id = p.id
+                  ORDER BY published_at DESC LIMIT 1
+                )
+              ORDER BY t.sort_order ASC LIMIT 1) as preview_track_name,
+            (SELECT t.duration_seconds FROM tracks t
+               JOIN pack_versions pv ON pv.id = t.pack_version_id
+              WHERE pv.pack_id = p.id
+                AND pv.version = (
+                  SELECT version FROM pack_versions pv2
+                  WHERE pv2.pack_id = p.id
+                  ORDER BY published_at DESC LIMIT 1
+                )
+              ORDER BY t.sort_order ASC LIMIT 1) as preview_track_duration
      FROM packs p
      WHERE listing_status = 'live'`,
   ).all<Record<string, unknown>>()
@@ -64,13 +91,14 @@ export async function getPack(env: Env, slug: string) {
     changelog: String(version.changelog),
     aiDisclosure: AI_DISCLOSURE,
     buyerLicense: BUYER_LICENSE,
-    tracks: (tracks.results ?? []).map((track) => ({
+    tracks: (tracks.results ?? []).map((track, index) => ({
       id: String(track.id),
       name: String(track.name),
       durationSeconds: Number(track.duration_seconds),
       moods: tags.moods,
       instruments: tags.instruments,
-      previewUrl: track.preview_r2_key ? `/api/previews/${track.id}` : null,
+      // Exactly 1 track per pack (always the first track, index === 0) is available for full preview
+      previewUrl: index === 0 ? `/api/previews/${track.id}` : null,
     })),
   }
 }
@@ -117,6 +145,15 @@ function serializePack(
   tags: { moods: string[]; instruments: string[] },
   featuredScore: number,
 ) {
+  const previewTrackId = pack.preview_track_id ? String(pack.preview_track_id) : `track_${pack.slug}_01`
+  const previewTrackName = pack.preview_track_name ? String(pack.preview_track_name) : `${pack.title} 01`
+  const previewDuration =
+    typeof pack.preview_track_duration === 'number'
+      ? Number(pack.preview_track_duration)
+      : pack.kind === 'fx'
+        ? 3
+        : 90
+
   return {
     id: String(pack.id),
     slug: String(pack.slug),
@@ -133,6 +170,12 @@ function serializePack(
     featuredScore,
     moods: tags.moods,
     instruments: tags.instruments,
+    previewTrack: {
+      id: previewTrackId,
+      name: previewTrackName,
+      durationSeconds: previewDuration,
+      previewUrl: `/api/previews/${previewTrackId}`,
+    },
   }
 }
 

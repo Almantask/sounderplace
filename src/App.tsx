@@ -4,6 +4,7 @@ import { AdminPackPage } from '@/pages/AdminPackPage'
 import { AdminPage } from '@/pages/AdminPage'
 import { CatalogPage } from '@/pages/CatalogPage'
 import { EcosystemPage } from '@/pages/EcosystemPage'
+import { FAQPage } from '@/pages/FAQPage'
 import { FeedbackPage } from '@/pages/FeedbackPage'
 import { HomePage } from '@/pages/HomePage'
 import { LibraryPage } from '@/pages/LibraryPage'
@@ -18,6 +19,7 @@ export function App() {
         <Route path="/packs/:slug" element={<PackPage />} />
         <Route path="/library" element={<LibraryPage />} />
         <Route path="/ecosystem" element={<EcosystemPage />} />
+        <Route path="/faq" element={<FAQPage />} />
         <Route path="/feedback" element={<FeedbackPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/packs/:slug" element={<AdminPackPage />} />

@@ -24,16 +24,30 @@ describe('parseAdminEmails', () => {
 })
 
 describe('isAdminAccess', () => {
-  it('grants access when the signed-in email is on the allowlist', () => {
+  it('grants access when the signed-in email is verified and on the allowlist', () => {
     expect(
       isAdminAccess({
         email: 'ada@example.com',
+        emailVerified: true,
         adminEmails: 'ada@example.com',
         allowDevLogin: undefined,
         operatorToken: undefined,
         presentedToken: null,
       }),
     ).toBe(true)
+  })
+
+  it('denies allowlist access when the email is not verified', () => {
+    expect(
+      isAdminAccess({
+        email: 'ada@example.com',
+        emailVerified: false,
+        adminEmails: 'ada@example.com',
+        allowDevLogin: undefined,
+        operatorToken: undefined,
+        presentedToken: null,
+      }),
+    ).toBe(false)
   })
 
   it('denies access when the email is not on the allowlist', () => {
@@ -54,10 +68,40 @@ describe('isAdminAccess', () => {
         email: 'dev@localhost',
         adminEmails: undefined,
         allowDevLogin: '1',
+        appUrl: 'http://127.0.0.1:5173',
+        requestHostname: '127.0.0.1',
         operatorToken: undefined,
         presentedToken: null,
       }),
     ).toBe(true)
+  })
+
+  it('does not treat ALLOW_DEV_LOGIN as admin access on a public APP_URL', () => {
+    expect(
+      isAdminAccess({
+        email: 'dev@localhost',
+        adminEmails: undefined,
+        allowDevLogin: '1',
+        appUrl: 'https://sunderplace.app',
+        requestHostname: '127.0.0.1',
+        operatorToken: undefined,
+        presentedToken: null,
+      }),
+    ).toBe(false)
+  })
+
+  it('does not treat ALLOW_DEV_LOGIN as admin access when the request host is public', () => {
+    expect(
+      isAdminAccess({
+        email: 'dev@localhost',
+        adminEmails: undefined,
+        allowDevLogin: '1',
+        appUrl: 'http://127.0.0.1:5173',
+        requestHostname: 'sunderplace.workers.dev',
+        operatorToken: undefined,
+        presentedToken: null,
+      }),
+    ).toBe(false)
   })
 
   it('grants access when a matching operator token is presented', () => {

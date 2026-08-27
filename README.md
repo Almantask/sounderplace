@@ -23,7 +23,7 @@ npm run dev:full
 - UI: http://127.0.0.1:5173
 - API: http://127.0.0.1:8787 (`/api/...`)
 
-`ALLOW_DEV_LOGIN=1` without Stripe keys grants paid licenses immediately (local only). Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` for real Checkout.
+Put `SESSION_SECRET` and optional `ALLOW_DEV_LOGIN=1` in `.dev.vars` only — never in `wrangler.toml`. Unpaid local grants and “any user is admin” work only when **both** `APP_URL` and the incoming request host are loopback, and Stripe keys are unset. Production must set `APP_URL` to the public `https://` origin. Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` for real Checkout. Production admin is a verified email in `ADMIN_EMAILS` (GitHub sign-in) or `OPERATOR_TOKEN`. Sessions last 7 days with a 24-hour idle timeout; **Sign out everywhere** revokes every device.
 
 ## Operator ingest
 

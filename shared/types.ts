@@ -24,6 +24,12 @@ export interface PackSummary {
   trackCount: number
   currentVersion: string
   featuredScore: number
+  previewTrack?: {
+    id: string
+    name: string
+    durationSeconds: number
+    previewUrl: string
+  } | null
 }
 
 export interface TrackSummary {

@@ -2,14 +2,36 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { parseFeedback } from '../shared/feedback.ts'
 import { checkoutKind, isFreePack, upgradeDeltaCents } from '../shared/pricing.ts'
+import {
+  allowRateLimitedRequest,
+  allowUnpaidDevGrant,
+  allowedCorsOrigin,
+  apiSecurityHeaders,
+  audioContentType,
+  clientIp,
+  downloadFilename,
+  grantedCheckoutLicense,
+  parseCheckoutLicense,
+  parseDonateCents,
+  parsePackWebhookGrant,
+  parseSignUpInput,
+  pickVerifiedGithubEmail,
+  requestHostname,
+  SlidingWindowLimiter,
+} from '../shared/security.ts'
 import { ECOSYSTEM_LINKS } from '../shared/starter-library.ts'
 import {
+  clearOauthStateCookie,
   clearSessionCookie,
+  createOAuthState,
   createSession,
   createUser,
+  deleteSession,
   getSessionUser,
+  readOAuthStateCookie,
   sessionCookie,
-  verifyPassword,
+  verifyOAuthState,
+  verifyPasswordOrDummy,
   type AuthUser,
 } from './auth.ts'
 import type { Env } from './env.ts'
@@ -37,19 +59,28 @@ import {
   recordDownload,
 } from './lib/catalog.ts'
 import { ensureSeed } from './lib/seed.ts'
-import { licenseUnitAmount, stripeRequest } from './lib/stripe.ts'
+import { licenseUnitAmount, stripeRequest, verifyStripeSignature } from './lib/stripe.ts'
 
 const app = new Hono<{ Bindings: Env; Variables: { user: AuthUser | null } }>()
+const authLimiter = new SlidingWindowLimiter(10, 15 * 60 * 1000)
+const actionLimiter = new SlidingWindowLimiter(8, 15 * 60 * 1000)
 
 app.get('/', (c) => c.json({ ok: true, name: 'sunderplace-api' }))
 
-app.use(
-  '/api/*',
-  cors({
-    origin: (origin) => origin,
+app.use('*', async (c, next) => {
+  await next()
+  for (const [key, value] of Object.entries(apiSecurityHeaders(c.env.APP_URL))) {
+    c.header(key, value)
+  }
+})
+
+app.use('/api/*', async (c, next) => {
+  const middleware = cors({
+    origin: (origin) => allowedCorsOrigin(origin, c.env.APP_URL) ?? '',
     credentials: true,
-  }),
-)
+  })
+  return middleware(c, next)
+})
 
 app.use('/api/*', async (c, next) => {
   c.set('user', await getSessionUser(c.env, c.req.raw))
@@ -58,6 +89,25 @@ app.use('/api/*', async (c, next) => {
 
 function jsonError(c: { json: (data: unknown, status?: number) => Response }, message: string, status = 400) {
   return c.json({ error: message }, status)
+}
+
+function rateLimit(limiter: SlidingWindowLimiter, binding: 'AUTH_RATE_LIMITER' | 'ACTION_RATE_LIMITER') {
+  return async (
+    c: {
+      env: Env
+      req: { raw: Request; path: string }
+      json: (data: unknown, status?: number) => Response
+    },
+    next: () => Promise<void>,
+  ) => {
+    const allowed = await allowRateLimitedRequest({
+      binding: c.env[binding],
+      limiter,
+      key: `${c.req.path}:${clientIp(c.req.raw)}`,
+    })
+    if (!allowed) return jsonError(c, 'Too many requests', 429)
+    await next()
+  }
 }
 
 function cookieSecure(env: Env): boolean {
@@ -79,56 +129,85 @@ app.get('/api/ecosystem', (c) =>
 
 app.get('/api/session', (c) => {
   const user = c.get('user')
-  return c.json({ user: user ? sessionUser(user, c.env) : null })
+  return c.json({ user: user ? sessionUser(user, c.env, c.req.raw) : null })
 })
 
-app.post('/api/auth/sign-up', async (c) => {
-  const body = await c.req.json<{ email?: string; password?: string; name?: string }>()
-  if (!body.email || !body.password || !body.name) return jsonError(c, 'Name, email, and password are required')
-  const existing = await c.env.DB.prepare('SELECT id FROM user WHERE email = ?').bind(body.email.toLowerCase()).first()
-  if (existing) return jsonError(c, 'An account with that email already exists', 409)
-  const user = await createUser(c.env, { email: body.email, name: body.name, password: body.password })
-  const token = await createSession(c.env, user.id, c.req.raw)
-  c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
-  return c.json({ user: sessionUser(user, c.env) })
+app.post('/api/auth/sign-up', rateLimit(authLimiter, 'AUTH_RATE_LIMITER'), async (c) => {
+  const parsed = parseSignUpInput(await c.req.json().catch(() => ({})))
+  if (!parsed.ok) return jsonError(c, parsed.error)
+  const existing = await c.env.DB.prepare('SELECT id FROM user WHERE email = ?').bind(parsed.value.email).first()
+  if (existing) return jsonError(c, 'Could not create account')
+  try {
+    const user = await createUser(c.env, parsed.value)
+    const token = await createSession(c.env, user.id, c.req.raw)
+    c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
+    return c.json({ user: sessionUser(user, c.env, c.req.raw) })
+  } catch {
+    return jsonError(c, 'Could not create account')
+  }
 })
 
-app.post('/api/auth/sign-in', async (c) => {
-  const body = await c.req.json<{ email?: string; password?: string }>()
+app.post('/api/auth/sign-in', rateLimit(authLimiter, 'AUTH_RATE_LIMITER'), async (c) => {
+  const body = await c.req.json<{ email?: string; password?: string }>().catch(() => ({} as { email?: string; password?: string }))
   if (!body.email || !body.password) return jsonError(c, 'Email and password are required')
   const row = await c.env.DB.prepare(
-    `SELECT user.id as id, user.email as email, user.name as name, account.password as password
+    `SELECT user.id as id, user.email as email, user.name as name, user.email_verified as email_verified,
+            account.password as password
      FROM user JOIN account ON account.user_id = user.id
      WHERE user.email = ? AND account.provider_id = 'credential'`,
   )
     .bind(body.email.toLowerCase())
-    .first<{ id: string; email: string; name: string; password: string }>()
-  if (!row || !(await verifyPassword(body.password, row.password))) {
+    .first<{ id: string; email: string; name: string; email_verified: number; password: string }>()
+  const passwordOk = await verifyPasswordOrDummy(body.password, row?.password)
+  if (!row || !passwordOk) {
     return jsonError(c, 'Invalid email or password', 401)
   }
   const token = await createSession(c.env, row.id, c.req.raw)
   c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
-  return c.json({ user: sessionUser({ id: row.id, email: row.email, name: row.name }, c.env) })
+  return c.json({
+    user: sessionUser(
+      { id: row.id, email: row.email, name: row.name, emailVerified: Number(row.email_verified) === 1 },
+      c.env,
+      c.req.raw,
+    ),
+  })
 })
 
-app.post('/api/auth/sign-out', (c) => {
+app.post('/api/auth/sign-out', async (c) => {
+  const body = await c.req.json<{ all?: boolean }>().catch(() => ({ all: false }))
+  await deleteSession(c.env, c.req.raw, { all: body.all === true })
   c.header('Set-Cookie', clearSessionCookie(cookieSecure(c.env)))
   return c.json({ ok: true })
 })
 
-app.get('/api/auth/github', (c) => {
+app.get('/api/auth/github', rateLimit(authLimiter, 'AUTH_RATE_LIMITER'), async (c) => {
   if (!c.env.GITHUB_CLIENT_ID) return jsonError(c, 'GitHub sign-in is not configured', 501)
+  const { nonce, cookie } = await createOAuthState(c.env)
+  c.header('Set-Cookie', cookie)
   const url = new URL('https://github.com/login/oauth/authorize')
   url.searchParams.set('client_id', c.env.GITHUB_CLIENT_ID)
   url.searchParams.set('redirect_uri', `${c.env.APP_URL}/api/auth/github/callback`)
   url.searchParams.set('scope', 'read:user user:email')
+  url.searchParams.set('state', nonce)
   return c.redirect(url.toString())
 })
 
-app.get('/api/auth/github/callback', async (c) => {
-  if (!c.env.GITHUB_CLIENT_ID || !c.env.GITHUB_CLIENT_SECRET) return jsonError(c, 'GitHub sign-in is not configured', 501)
+app.get('/api/auth/github/callback', rateLimit(authLimiter, 'AUTH_RATE_LIMITER'), async (c) => {
+  const secure = cookieSecure(c.env)
+  const clearOauth = clearOauthStateCookie(secure)
+  if (!c.env.GITHUB_CLIENT_ID || !c.env.GITHUB_CLIENT_SECRET) {
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'GitHub sign-in is not configured', 501)
+  }
+  if (!(await verifyOAuthState(c.env.SESSION_SECRET, c.req.query('state'), readOAuthStateCookie(c.req.raw)))) {
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'Invalid GitHub sign-in state', 401)
+  }
   const code = c.req.query('code')
-  if (!code) return jsonError(c, 'Missing GitHub code')
+  if (!code) {
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'Missing GitHub code')
+  }
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -139,7 +218,10 @@ app.get('/api/auth/github/callback', async (c) => {
     }),
   })
   const tokenJson = (await tokenRes.json()) as { access_token?: string }
-  if (!tokenJson.access_token) return jsonError(c, 'GitHub token exchange failed', 401)
+  if (!tokenJson.access_token) {
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'GitHub token exchange failed', 401)
+  }
   const userRes = await fetch('https://api.github.com/user', {
     headers: { Authorization: `Bearer ${tokenJson.access_token}`, 'User-Agent': 'sunderplace' },
   })
@@ -147,30 +229,63 @@ app.get('/api/auth/github/callback', async (c) => {
   const emailsRes = await fetch('https://api.github.com/user/emails', {
     headers: { Authorization: `Bearer ${tokenJson.access_token}`, 'User-Agent': 'sunderplace' },
   })
-  const emails = (await emailsRes.json()) as Array<{ email: string; primary: boolean; verified: boolean }>
-  const email = gh.email ?? emails.find((row) => row.primary && row.verified)?.email ?? emails[0]?.email
-  if (!email) return jsonError(c, 'GitHub account has no email', 400)
-  let user = await c.env.DB.prepare('SELECT id, email, name FROM user WHERE email = ?')
-    .bind(email.toLowerCase())
-    .first<AuthUser>()
+  const emails = await emailsRes.json()
+  const email = pickVerifiedGithubEmail(gh.email, emails)
+  if (!email) {
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'GitHub account has no verified email', 400)
+  }
+  const githubAccount = await c.env.DB.prepare(
+    `SELECT user_id as userId FROM account WHERE provider_id = 'github' AND account_id = ?`,
+  )
+    .bind(String(gh.id))
+    .first<{ userId: string }>()
+  let user: AuthUser | null = null
+  if (githubAccount) {
+    const row = await c.env.DB.prepare('SELECT id, email, name, email_verified FROM user WHERE id = ?')
+      .bind(githubAccount.userId)
+      .first<{ id: string; email: string; name: string; email_verified: number }>()
+    if (row) {
+      user = { id: row.id, email: row.email, name: row.name, emailVerified: Number(row.email_verified) === 1 }
+    }
+  } else {
+    const existing = await c.env.DB.prepare('SELECT id, email, name, email_verified FROM user WHERE email = ?')
+      .bind(email)
+      .first<{ id: string; email: string; name: string; email_verified: number }>()
+    if (existing && Number(existing.email_verified) !== 1) {
+      c.header('Set-Cookie', clearOauth)
+      return jsonError(c, 'An account with that email already exists. Sign in with your password.')
+    }
+    if (existing) {
+      const now = Date.now()
+      await c.env.DB.prepare(
+        `INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES (?, ?, 'github', ?, ?, ?)`,
+      )
+        .bind(crypto.randomUUID(), String(gh.id), existing.id, now, now)
+        .run()
+      user = { id: existing.id, email: existing.email, name: existing.name, emailVerified: true }
+    } else {
+      const id = crypto.randomUUID()
+      const now = Date.now()
+      const name = gh.name ?? gh.login
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          `INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+        ).bind(id, name, email, now, now),
+        c.env.DB.prepare(
+          `INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES (?, ?, 'github', ?, ?, ?)`,
+        ).bind(crypto.randomUUID(), String(gh.id), id, now, now),
+      ])
+      user = { id, email, name, emailVerified: true }
+    }
+  }
   if (!user) {
-    const id = crypto.randomUUID()
-    const now = Date.now()
-    const name = gh.name ?? gh.login
-    await c.env.DB.prepare(
-      `INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
-    )
-      .bind(id, name, email.toLowerCase(), now, now)
-      .run()
-    await c.env.DB.prepare(
-      `INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES (?, ?, 'github', ?, ?, ?)`,
-    )
-      .bind(crypto.randomUUID(), String(gh.id), id, now, now)
-      .run()
-    user = { id, email: email.toLowerCase(), name }
+    c.header('Set-Cookie', clearOauth)
+    return jsonError(c, 'GitHub sign-in failed', 401)
   }
   const token = await createSession(c.env, user.id, c.req.raw)
-  c.header('Set-Cookie', sessionCookie(token, cookieSecure(c.env)))
+  c.header('Set-Cookie', sessionCookie(token, secure))
+  c.header('Set-Cookie', clearOauth, { append: true })
   return c.redirect(`${c.env.APP_URL}/library`)
 })
 
@@ -329,29 +444,38 @@ app.post('/api/packs/:slug/claim', async (c) => {
   return c.json({ ok: true })
 })
 
-app.post('/api/checkout', async (c) => {
+app.post('/api/checkout', rateLimit(actionLimiter, 'ACTION_RATE_LIMITER'), async (c) => {
   const user = c.get('user')
   if (!user) return jsonError(c, 'Sign in required', 401)
-  const body = await c.req.json<{ slug?: string; license?: 'snapshot' | 'update_pass' | 'upgrade' }>()
-  if (!body.slug || !body.license) return jsonError(c, 'slug and license are required')
+  const body = await c.req.json<{ slug?: string; license?: string }>().catch(() => ({} as { slug?: string; license?: string }))
+  const license = parseCheckoutLicense(body.license)
+  if (!body.slug) return jsonError(c, 'slug and license are required')
+  if (!license) return jsonError(c, 'license must be snapshot, update_pass, or upgrade')
   const pack = await getPack(c.env, body.slug)
   if (!pack) return jsonError(c, 'Pack not found', 404)
   if (isFreePack(pack.priceSnapshotCents, pack.priceUpdatePassCents)) {
     return jsonError(c, 'Free packs do not use checkout')
   }
   const entitlement = await getEntitlement(c.env, user.id, pack.id)
-  if (body.license === 'upgrade' && entitlement?.license !== 'snapshot') {
+  if (license === 'upgrade' && entitlement?.license !== 'snapshot') {
     return jsonError(c, 'Upgrade requires an existing snapshot license')
   }
   if (entitlement?.license === 'update_pass') return jsonError(c, 'You already have the update pass')
   const amount = licenseUnitAmount({
-    license: body.license,
+    license,
     snapshotCents: pack.priceSnapshotCents,
     updatePassCents: pack.priceUpdatePassCents,
   })
-  const grantedLicense = body.license === 'snapshot' ? 'snapshot' : 'update_pass'
+  const grantedLicense = grantedCheckoutLicense(license)
   if (!c.env.STRIPE_SECRET_KEY) {
-    if (c.env.ALLOW_DEV_LOGIN === '1') {
+    if (
+      allowUnpaidDevGrant({
+        allowDevLogin: c.env.ALLOW_DEV_LOGIN,
+        appUrl: c.env.APP_URL,
+        stripeSecretKey: c.env.STRIPE_SECRET_KEY,
+        requestHostname: requestHostname(c.req.raw),
+      })
+    ) {
       await grantEntitlement(c.env, {
         userId: user.id,
         packId: pack.id,
@@ -379,6 +503,7 @@ app.post('/api/checkout', async (c) => {
     'line_items[0][price_data][product_data][name]': `${pack.title} (${grantedLicense === 'snapshot' ? 'snapshot' : 'update pass'})`,
     'metadata[type]': 'pack',
     'metadata[packId]': pack.id,
+    'metadata[checkoutLicense]': license,
     'metadata[license]': grantedLicense,
     'metadata[userId]': user.id,
     'metadata[version]': pack.currentVersion,
@@ -386,7 +511,7 @@ app.post('/api/checkout', async (c) => {
   return c.json({ url: session.url })
 })
 
-app.post('/api/feedback', async (c) => {
+app.post('/api/feedback', rateLimit(actionLimiter, 'ACTION_RATE_LIMITER'), async (c) => {
   const body = await c.req.json<{ name?: string; email?: string; category?: string; message?: string }>().catch(() => ({}))
   const parsed = parseFeedback(body)
   if (!parsed.ok) return jsonError(c, parsed.error)
@@ -408,10 +533,10 @@ app.post('/api/feedback', async (c) => {
   return c.json({ ok: true })
 })
 
-app.post('/api/donate', async (c) => {
+app.post('/api/donate', rateLimit(actionLimiter, 'ACTION_RATE_LIMITER'), async (c) => {
   const body = await c.req.json<{ amountCents?: number }>().catch(() => ({ amountCents: undefined }))
-  const amount = body.amountCents ?? Number(c.env.DONATE_CENTS ?? '500')
-  if (amount < 100) return jsonError(c, 'Minimum donation is $1')
+  const amount = parseDonateCents(body.amountCents, Number(c.env.DONATE_CENTS ?? '500'))
+  if (amount === null) return jsonError(c, 'Donation must be a whole amount between $1 and $500')
   const user = c.get('user')
   if (!c.env.STRIPE_SECRET_KEY) {
     return c.json({
@@ -443,58 +568,108 @@ app.post('/api/stripe/webhook', async (c) => {
   if (!(await verifyStripeSignature(payload, header, c.env.STRIPE_WEBHOOK_SECRET))) {
     return jsonError(c, 'Invalid signature', 400)
   }
-  const event = JSON.parse(payload) as {
+  let event: {
     type: string
-    data: { object: { id: string; metadata?: Record<string, string>; payment_intent?: string } }
+    data: { object: { id: string; amount_total?: number; metadata?: Record<string, string>; payment_intent?: string } }
+  }
+  try {
+    event = JSON.parse(payload) as typeof event
+  } catch {
+    return jsonError(c, 'Invalid payload', 400)
   }
   if (event.type !== 'checkout.session.completed') return c.json({ received: true })
   const session = event.data.object
   const meta = session.metadata ?? {}
   if (meta.type === 'donate') {
+    const donated = parseDonateCents(session.amount_total ?? null, Number.NaN)
+    if (donated === null) return c.json({ received: true })
     await c.env.DB.prepare(
       `INSERT OR IGNORE INTO donations (id, user_id, amount_cents, stripe_session_id, created_at) VALUES (?, ?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), meta.userId || null, 0, session.id, Date.now())
+      .bind(crypto.randomUUID(), meta.userId || null, donated, session.id, Date.now())
       .run()
     return c.json({ received: true })
   }
-  if (meta.type === 'pack' && meta.userId && meta.packId && meta.license && meta.version) {
-    await grantEntitlement(c.env, {
-      userId: meta.userId,
-      packId: meta.packId,
-      license: meta.license as 'snapshot' | 'update_pass',
-      version: meta.version,
-    })
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO purchases (id, user_id, pack_id, license, amount_cents, stripe_session_id, stripe_payment_intent_id, created_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
-    )
-      .bind(
-        crypto.randomUUID(),
-        meta.userId,
-        meta.packId,
-        meta.license,
-        session.id,
-        session.payment_intent ?? null,
-        Date.now(),
+  const packRow = meta.packId
+    ? await c.env.DB.prepare(
+        `SELECT id, price_snapshot_cents as priceSnapshotCents, price_update_pass_cents as priceUpdatePassCents FROM packs WHERE id = ?`,
       )
-      .run()
-  }
+        .bind(meta.packId)
+        .first<{ id: string; priceSnapshotCents: number; priceUpdatePassCents: number }>()
+    : null
+  const versionRows = packRow
+    ? await c.env.DB.prepare(`SELECT version FROM pack_versions WHERE pack_id = ?`)
+        .bind(packRow.id)
+        .all<{ version: string }>()
+    : { results: [] as Array<{ version: string }> }
+  const grant = parsePackWebhookGrant({
+    metadata: meta,
+    amountTotal: session.amount_total,
+    pack: packRow
+      ? {
+          id: packRow.id,
+          priceSnapshotCents: packRow.priceSnapshotCents,
+          priceUpdatePassCents: packRow.priceUpdatePassCents,
+          versions: (versionRows.results ?? []).map((row) => row.version),
+        }
+      : null,
+  })
+  if (!grant.ok) return c.json({ received: true })
+  const buyer = await c.env.DB.prepare('SELECT id FROM user WHERE id = ?').bind(grant.value.userId).first()
+  if (!buyer) return c.json({ received: true })
+  await grantEntitlement(c.env, {
+    userId: grant.value.userId,
+    packId: grant.value.packId,
+    license: grant.value.license,
+    version: grant.value.version,
+  })
+  await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO purchases (id, user_id, pack_id, license, amount_cents, stripe_session_id, stripe_payment_intent_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      grant.value.userId,
+      grant.value.packId,
+      grant.value.license,
+      grant.value.amountCents,
+      session.id,
+      session.payment_intent ?? null,
+      Date.now(),
+    )
+    .run()
   return c.json({ received: true })
 })
 
 app.get('/api/previews/:trackId', async (c) => {
   await ensureSeed(c.env.DB)
-  const track = await c.env.DB.prepare('SELECT preview_r2_key FROM tracks WHERE id = ?')
+  const track = await c.env.DB.prepare(
+    `SELECT t.preview_r2_key as preview_r2_key
+     FROM tracks t
+     JOIN pack_versions pv ON pv.id = t.pack_version_id
+     JOIN packs p ON p.id = pv.pack_id
+     WHERE t.id = ?
+       AND p.listing_status = 'live'
+       AND t.preview_r2_key IS NOT NULL
+       AND t.sort_order = (
+         SELECT MIN(t2.sort_order) FROM tracks t2 WHERE t2.pack_version_id = t.pack_version_id
+       )
+       AND pv.version = (
+         SELECT version FROM pack_versions pv2 WHERE pv2.pack_id = p.id ORDER BY published_at DESC LIMIT 1
+       )`,
+  )
     .bind(c.req.param('trackId'))
-    .first<{ preview_r2_key: string | null }>()
+    .first<{ preview_r2_key: string }>()
   if (!track?.preview_r2_key) return jsonError(c, 'Preview not found', 404)
   const object = await c.env.AUDIO.get(track.preview_r2_key)
   if (!object) return jsonError(c, 'Preview file is not ingested yet', 404)
+  const extIndex = track.preview_r2_key.lastIndexOf('.')
+  const ext = extIndex >= 0 ? track.preview_r2_key.slice(extIndex).toLowerCase() : '.ogg'
   return new Response(object.body, {
     headers: {
-      'Content-Type': object.httpMetadata?.contentType ?? 'audio/ogg',
+      'Content-Type': audioContentType(ext),
       'Cache-Control': 'public, max-age=3600',
+      'X-Content-Type-Options': 'nosniff',
     },
   })
 })
@@ -505,6 +680,8 @@ app.get('/api/downloads/:slug/:version', async (c) => {
   const pack = await getPack(c.env, c.req.param('slug'))
   if (!pack) return jsonError(c, 'Pack not found', 404)
   const version = c.req.param('version')
+  const filename = downloadFilename(pack.slug, version)
+  if (!filename) return jsonError(c, 'Unknown pack version', 400)
   const entitlement = await getEntitlement(c.env, user.id, pack.id)
   const free = isFreePack(pack.priceSnapshotCents, pack.priceUpdatePassCents)
   if (!entitledToVersion(entitlement, pack.id, version, free)) {
@@ -525,31 +702,10 @@ app.get('/api/downloads/:slug/:version', async (c) => {
   return new Response(object.body, {
     headers: {
       'Content-Type': 'application/zip',
-      'Content-Disposition': `attachment; filename="${pack.slug}-${version}.zip"`,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
     },
   })
 })
-
-async function verifyStripeSignature(payload: string, header: string, secret: string): Promise<boolean> {
-  const parts = Object.fromEntries(
-    header.split(',').map((item) => {
-      const [k, v] = item.split('=')
-      return [k.trim(), v]
-    }),
-  )
-  const timestamp = parts.t
-  const expected = parts.v1
-  if (!timestamp || !expected) return false
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
-  const signed = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${payload}`))
-  const digest = [...new Uint8Array(signed)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-  return digest === expected
-}
 
 export default app

@@ -14,4 +14,6 @@ export interface Env {
   ADMIN_EMAILS?: string
   ALLOW_DEV_LOGIN?: string
   DONATE_CENTS?: string
+  AUTH_RATE_LIMITER?: { limit: (options: { key: string }) => Promise<{ success: boolean }> }
+  ACTION_RATE_LIMITER?: { limit: (options: { key: string }) => Promise<{ success: boolean }> }
 }

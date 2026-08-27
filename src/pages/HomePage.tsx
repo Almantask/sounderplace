@@ -34,6 +34,9 @@ export function HomePage() {
             <Link to="/catalog">Browse the catalog</Link>
           </Button>
           <Button variant="outline" asChild>
+            <Link to="/faq">Marketplace FAQ</Link>
+          </Button>
+          <Button variant="outline" asChild>
             <Link to="/ecosystem">Tools & donate</Link>
           </Button>
         </div>

@@ -47,20 +47,34 @@ export function AppShell() {
             <NavItem to="/catalog">Catalog</NavItem>
             <NavItem to="/library">Library</NavItem>
             <NavItem to="/ecosystem">Ecosystem</NavItem>
+            <NavItem to="/faq">FAQ</NavItem>
             <NavItem to="/feedback">Feedback</NavItem>
             {user?.isAdmin ? <NavItem to="/admin">Admin</NavItem> : null}
             {user ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  await api.signOut()
-                  setUser(null)
-                  navigate('/')
-                }}
-              >
-                Sign out
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    await api.signOut()
+                    setUser(null)
+                    navigate('/')
+                  }}
+                >
+                  Sign out
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    await api.signOut({ all: true })
+                    setUser(null)
+                    navigate('/')
+                  }}
+                >
+                  Sign out everywhere
+                </Button>
+              </div>
             ) : (
               <Button size="sm" onClick={() => setAuthOpen(true)}>
                 Sign in

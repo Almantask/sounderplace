@@ -7,6 +7,7 @@ import {
   parsePackWrite,
   parseTrackWrite,
 } from '../../shared/admin.ts'
+import { audioContentType, MAX_AUDIO_UPLOAD_BYTES, MAX_ZIP_UPLOAD_BYTES, requestHostname, sniffUpload, uploadMatchesExtension } from '../../shared/security.ts'
 import type { AdminPackDetail, AdminPackSummary, AdminTrack, ListingStatus, PackKind, SessionUser } from '../../shared/types.ts'
 import type { AuthUser } from '../auth.ts'
 import type { Env } from '../env.ts'
@@ -28,8 +29,11 @@ export function adminGate(user: AuthUser | null, env: Env, request: Request): Ad
   if (
     isAdminAccess({
       email: user?.email ?? null,
+      emailVerified: user?.emailVerified ?? false,
       adminEmails: env.ADMIN_EMAILS,
       allowDevLogin: env.ALLOW_DEV_LOGIN,
+      appUrl: env.APP_URL,
+      requestHostname: requestHostname(request),
       operatorToken: env.OPERATOR_TOKEN,
       presentedToken,
     })
@@ -40,15 +44,18 @@ export function adminGate(user: AuthUser | null, env: Env, request: Request): Ad
   return { ok: false, status: 403, error: 'Admin access required' }
 }
 
-export function sessionUser(user: AuthUser, env: Env): SessionUser {
+export function sessionUser(user: AuthUser, env: Env, request: Request): SessionUser {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     isAdmin: isAdminAccess({
       email: user.email,
+      emailVerified: user.emailVerified,
       adminEmails: env.ADMIN_EMAILS,
       allowDevLogin: env.ALLOW_DEV_LOGIN,
+      appUrl: env.APP_URL,
+      requestHostname: requestHostname(request),
       operatorToken: env.OPERATOR_TOKEN,
       presentedToken: null,
     }),
@@ -359,8 +366,13 @@ export async function storeTrackAudio(
   if (!track) return { error: 'Track not found', status: 404 }
   const ext = fileExtension(file.name)
   if (!AUDIO_EXTENSIONS.has(ext)) return { error: 'Upload ogg, wav, flac, mp3, or opus audio', status: 400 }
+  if (file.size > MAX_AUDIO_UPLOAD_BYTES) return { error: 'Audio file is too large', status: 413 }
   const bytes = await file.arrayBuffer()
   if (bytes.byteLength === 0) return { error: 'Audio file is empty', status: 400 }
+  const sniffed = sniffUpload(new Uint8Array(bytes))
+  if (!sniffed || sniffed === 'zip' || !uploadMatchesExtension(sniffed, ext)) {
+    return { error: 'Audio file type does not match its contents', status: 400 }
+  }
   const hash = await sha256Hex(bytes)
   const hashes = await env.DB.prepare(`SELECT content_sha256 as hash FROM tracks WHERE content_sha256 IS NOT NULL AND id != ?`)
     .bind(trackId)
@@ -374,7 +386,7 @@ export async function storeTrackAudio(
   const versionLabel = String(version.version)
   const key = `packs/${pack.slug}/v/${versionLabel}/tracks/${trackId}${ext}`
   await env.AUDIO.put(key, bytes, {
-    httpMetadata: { contentType: file.type || 'audio/ogg' },
+    httpMetadata: { contentType: audioContentType(ext) },
   })
   const previewKey = Number(track.sort_order) === 0 ? key : (track.preview_r2_key as string | null)
   await env.DB.prepare(
@@ -397,12 +409,14 @@ export async function storePackArchive(
   if (!version) return { error: 'Pack version is missing', status: 500 }
   const ext = fileExtension(file.name, '.zip')
   if (ext !== '.zip') return { error: 'Upload a .zip pack archive', status: 400 }
+  if (file.size > MAX_ZIP_UPLOAD_BYTES) return { error: 'Archive is too large', status: 413 }
   const bytes = await file.arrayBuffer()
   if (bytes.byteLength === 0) return { error: 'Archive is empty', status: 400 }
+  if (sniffUpload(new Uint8Array(bytes)) !== 'zip') return { error: 'Archive is not a zip file', status: 400 }
   const versionLabel = String(version.version)
   const key = `packs/${pack.slug}/v/${versionLabel}/pack.zip`
   await env.AUDIO.put(key, bytes, {
-    httpMetadata: { contentType: file.type || 'application/zip' },
+    httpMetadata: { contentType: 'application/zip' },
   })
   await env.DB.prepare(`UPDATE pack_versions SET zip_r2_key = ? WHERE id = ?`).bind(key, version.id).run()
   await env.DB.prepare(`UPDATE packs SET updated_at = ? WHERE id = ?`).bind(Date.now(), pack.id).run()

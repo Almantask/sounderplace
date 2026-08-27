@@ -1,4 +1,5 @@
 import type { TrackSummary } from '@shared/types'
+import { Badge } from '@/components/ui/badge'
 import { PreviewPlayer } from './PreviewPlayer'
 
 export function TrackList({ tracks }: { tracks: TrackSummary[] }) {
@@ -9,13 +10,20 @@ export function TrackList({ tracks }: { tracks: TrackSummary[] }) {
     <ul className="divide-y divide-line">
       {tracks.map((track) => (
         <li key={track.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-          <div>
-            <p className="font-medium">{track.name}</p>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <p className="font-medium">{track.name}</p>
+              {track.previewUrl ? <Badge className="bg-gold/10 text-[10px]">Full Preview</Badge> : null}
+            </div>
             <p className="text-xs text-muted">
               {track.durationSeconds}s · {track.moods.join(', ')} · {track.instruments.join(', ')}
             </p>
           </div>
-          <PreviewPlayer name={track.name} src={track.previewUrl} />
+          {track.previewUrl ? (
+            <PreviewPlayer name={track.name} src={track.previewUrl} />
+          ) : (
+            <span className="text-xs text-muted">Included in pack</span>
+          )}
         </li>
       ))}
     </ul>

@@ -20,7 +20,7 @@ const pack = {
 }
 
 describe('PackCard', () => {
-  it('renders a free pack title, kind, and track count', () => {
+  it('renders a free pack title, kind, track count, and 1-track preview player', () => {
     render(
       <MemoryRouter>
         <PackCard pack={pack} />
@@ -29,5 +29,7 @@ describe('PackCard', () => {
     expect(screen.getByRole('heading', { name: 'Tavern' })).toBeInTheDocument()
     expect(screen.getByText(/free/i)).toBeInTheDocument()
     expect(screen.getByText(/30 tracks/i)).toBeInTheDocument()
+    expect(screen.getByText(/preview track:/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/preview tavern 01/i)).toBeInTheDocument()
   })
 })

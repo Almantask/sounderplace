@@ -1,3 +1,8 @@
+import { STRIPE_SIGNATURE_TOLERANCE_SEC, bytesToHex, timingSafeEqualHex } from '../../shared/security.ts'
+import { licenseUnitAmount } from '../../shared/pricing.ts'
+
+export { licenseUnitAmount }
+
 export async function stripeRequest(
   secretKey: string,
   path: string,
@@ -20,12 +25,34 @@ export async function stripeRequest(
   return json
 }
 
-export function licenseUnitAmount(options: {
-  license: 'snapshot' | 'update_pass' | 'upgrade'
-  snapshotCents: number
-  updatePassCents: number
-}): number {
-  if (options.license === 'snapshot') return options.snapshotCents
-  if (options.license === 'update_pass') return options.updatePassCents
-  return options.updatePassCents - options.snapshotCents
+export async function verifyStripeSignature(
+  payload: string,
+  header: string,
+  secret: string,
+  nowSec = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  const parts = header.split(',').map((item) => {
+    const eq = item.indexOf('=')
+    if (eq < 0) return ['', ''] as const
+    return [item.slice(0, eq).trim(), item.slice(eq + 1).trim()] as const
+  })
+  const timestamp = parts.find(([key]) => key === 't')?.[1]
+  const signatures = parts.filter(([key]) => key === 'v1').map(([, value]) => value)
+  if (!timestamp || signatures.length === 0) return false
+  const ts = Number(timestamp)
+  if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > STRIPE_SIGNATURE_TOLERANCE_SEC) return false
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signed = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${payload}`))
+  const digest = bytesToHex(signed)
+  let ok = false
+  for (const expected of signatures) {
+    if (timingSafeEqualHex(digest, expected)) ok = true
+  }
+  return ok
 }

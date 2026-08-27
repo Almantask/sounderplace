@@ -1,4 +1,5 @@
 import type { ListingStatus, PackKind } from './types.ts'
+import { isLocalAppUrl, isLoopbackHostname, timingSafeEqualString } from './security.ts'
 
 export const MIN_LIVE_TRACKS = 30
 export const PACK_KINDS = ['ambience', 'fx'] as const
@@ -7,8 +8,11 @@ export const AUDIO_EXTENSIONS = new Set(['.ogg', '.wav', '.flac', '.mp3', '.opus
 
 export interface AdminAccessOptions {
   email: string | null
+  emailVerified?: boolean
   adminEmails: string | undefined
   allowDevLogin: string | undefined
+  appUrl?: string
+  requestHostname?: string
   operatorToken: string | undefined
   presentedToken: string | null
 }
@@ -46,13 +50,20 @@ export function parseAdminEmails(value: string | undefined): string[] {
 }
 
 export function isAdminAccess(options: AdminAccessOptions): boolean {
-  if (options.operatorToken && options.presentedToken && options.operatorToken === options.presentedToken) {
+  if (
+    options.operatorToken &&
+    options.presentedToken &&
+    timingSafeEqualString(options.operatorToken, options.presentedToken)
+  ) {
     return true
   }
   if (!options.email) return false
   const emails = parseAdminEmails(options.adminEmails)
-  if (emails.length > 0) return emails.includes(options.email.toLowerCase())
-  return options.allowDevLogin === '1'
+  if (emails.length > 0) {
+    if (!options.emailVerified) return false
+    return emails.includes(options.email.toLowerCase())
+  }
+  return options.allowDevLogin === '1' && isLocalAppUrl(options.appUrl) && isLoopbackHostname(options.requestHostname)
 }
 
 export function slugify(input: string): string {

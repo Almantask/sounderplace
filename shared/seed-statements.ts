@@ -26,6 +26,7 @@ export function buildSeedStatements(paidBoss = true, created = Date.now()): Seed
   for (const pack of packs) {
     const packId = `pack_${pack.slug}`
     const versionId = `ver_${pack.slug}_v1`
+    // Seed ids are stable fixtures for local/dev data. Access control must not depend on them being secret.
     const paid = pack.slug === 'boss-ambience'
     statements.push({
       sql: `INSERT OR IGNORE INTO packs (
@@ -55,6 +56,8 @@ export function buildSeedStatements(paidBoss = true, created = Date.now()): Seed
 
     for (let i = 0; i < pack.trackCount; i += 1) {
       const trackId = `track_${pack.slug}_${String(i + 1).padStart(2, '0')}`
+      const isPreviewTrack = i === 0
+      const trackR2Key = `packs/${pack.slug}/v/v1/tracks/${trackId}.ogg`
       statements.push({
         sql: `INSERT OR IGNORE INTO tracks (
           id, pack_version_id, name, duration_seconds, full_r2_key, preview_r2_key,
@@ -65,8 +68,8 @@ export function buildSeedStatements(paidBoss = true, created = Date.now()): Seed
           versionId,
           trackName(pack.title, i),
           pack.kind === 'fx' ? 3 : 90,
-          null,
-          null,
+          trackR2Key,
+          isPreviewTrack ? trackR2Key : null,
           i,
         ],
       })
