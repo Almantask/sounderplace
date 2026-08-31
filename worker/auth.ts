@@ -1,4 +1,3 @@
-import type { Context } from 'hono'
 import {
   bytesToHex,
   clipPassword,
@@ -54,7 +53,10 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const iterations = Number(iter)
   const salt = saltHex ? hexToBytes(saltHex) : null
   if (scheme !== 'pbkdf2' || !Number.isInteger(iterations) || iterations < 1 || iterations > 500_000 || !salt || !hashHex) {
-    return verifyPassword(material, DUMMY_PASSWORD_HASH).then(() => false)
+    // Burn the same work as a real verification so a malformed stored hash is not
+    // distinguishable by timing. Guarded so a bad constant cannot recurse forever.
+    if (stored !== DUMMY_PASSWORD_HASH) await verifyPassword(material, DUMMY_PASSWORD_HASH)
+    return false
   }
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(material), 'PBKDF2', false, ['deriveBits'])
   const bits = await crypto.subtle.deriveBits(
@@ -186,12 +188,6 @@ export async function deleteSession(env: Env, request: Request, options: { all?:
     return
   }
   await env.DB.prepare('DELETE FROM session WHERE token = ?').bind(token).run()
-}
-
-export async function requireUser(c: Context<{ Bindings: Env }>): Promise<AuthUser> {
-  const user = await getSessionUser(c.env, c.req.raw)
-  if (!user) throw new Error('UNAUTHENTICATED')
-  return user
 }
 
 export async function createUser(

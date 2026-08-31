@@ -24,6 +24,7 @@ export interface PackSummary {
   trackCount: number
   currentVersion: string
   featuredScore: number
+  downloadCount: number
   previewTrack?: {
     id: string
     name: string

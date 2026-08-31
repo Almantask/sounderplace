@@ -132,7 +132,15 @@ export function AdminPackPage() {
     if (!window.confirm(`Delete ${pack.title} and all of its tracks?`)) return
     setBusy(true)
     try {
-      await api.deleteAdminPack(slug)
+      const result = await api.deleteAdminPack(slug)
+      // A pack someone has paid for is delisted instead of deleted, so that the purchase
+      // record and the buyer's licence survive. Say so rather than implying it is gone.
+      if (result.archived) {
+        window.alert(
+          `${pack.title} has ${result.purchases} purchase(s), so it was delisted rather than deleted. ` +
+            'Buyers keep their licence and the purchase record is intact.',
+        )
+      }
       navigate('/admin')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete pack')

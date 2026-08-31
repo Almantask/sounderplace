@@ -10,6 +10,7 @@ import {
   audioContentType,
   clipPassword,
   downloadFilename,
+  appUrlConfigError,
   isLiveDesignatedPreview,
   isLocalAppUrl,
   isLoopbackHostname,
@@ -420,5 +421,28 @@ describe('session lifetime', () => {
     expect(sessionIsActive({ expiresAt: created + 10, updatedAt: created, now: created + 11 })).toBe(false)
     expect(SESSION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000)
     expect(SESSION_IDLE_MS).toBe(24 * 60 * 60 * 1000)
+  })
+})
+
+describe('appUrlConfigError', () => {
+  it('accepts the loopback default while Stripe is unset', () => {
+    expect(appUrlConfigError({ APP_URL: 'http://127.0.0.1:5173' })).toBeNull()
+  })
+
+  it('rejects the committed loopback default once Stripe is configured', () => {
+    expect(appUrlConfigError({ APP_URL: 'http://127.0.0.1:5173', STRIPE_SECRET_KEY: 'sk_live_x' })).toMatch(/loopback/)
+  })
+
+  it('requires https for a real deployment', () => {
+    expect(appUrlConfigError({ APP_URL: 'http://sunderplace.test', STRIPE_SECRET_KEY: 'sk_live_x' })).toMatch(/https/)
+  })
+
+  it('accepts a public https origin with Stripe configured', () => {
+    expect(appUrlConfigError({ APP_URL: 'https://sunderplace.test', STRIPE_SECRET_KEY: 'sk_live_x' })).toBeNull()
+  })
+
+  it('rejects a missing or unparseable APP_URL', () => {
+    expect(appUrlConfigError({})).toMatch(/not configured/)
+    expect(appUrlConfigError({ APP_URL: 'not a url' })).toMatch(/valid URL/)
   })
 })

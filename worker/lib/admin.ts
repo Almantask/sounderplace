@@ -1,4 +1,4 @@
-import { findExactDuplicate, shouldAutoRejectDuplicate } from '../../shared/duplicates.ts'
+import { shouldAutoRejectDuplicate } from '../../shared/duplicates.ts'
 import {
   AUDIO_EXTENSIONS,
   bearerToken,
@@ -87,17 +87,20 @@ async function currentVersion(env: Env, packId: string) {
 }
 
 async function replaceTrackTags(env: Env, trackId: string, moods: string[], instruments: string[]) {
-  await env.DB.prepare(`DELETE FROM track_tags WHERE track_id = ?`).bind(trackId).run()
+  const statements = [env.DB.prepare(`DELETE FROM track_tags WHERE track_id = ?`).bind(trackId)]
   for (const mood of moods) {
-    await env.DB.prepare(`INSERT INTO track_tags (id, track_id, kind, value) VALUES (?, ?, 'mood', ?)`)
-      .bind(crypto.randomUUID(), trackId, mood)
-      .run()
+    statements.push(
+      env.DB.prepare(`INSERT INTO track_tags (id, track_id, kind, value) VALUES (?, ?, 'mood', ?)`)
+        .bind(crypto.randomUUID(), trackId, mood),
+    )
   }
   for (const instrument of instruments) {
-    await env.DB.prepare(`INSERT INTO track_tags (id, track_id, kind, value) VALUES (?, ?, 'instrument', ?)`)
-      .bind(crypto.randomUUID(), trackId, instrument)
-      .run()
+    statements.push(
+      env.DB.prepare(`INSERT INTO track_tags (id, track_id, kind, value) VALUES (?, ?, 'instrument', ?)`)
+        .bind(crypto.randomUUID(), trackId, instrument),
+    )
   }
+  await env.DB.batch(statements)
 }
 
 async function loadTracks(env: Env, versionId: string): Promise<AdminTrack[]> {
@@ -194,14 +197,16 @@ export async function createAdminPack(env: Env, input: unknown): Promise<{ pack?
   const now = Date.now()
   const packId = crypto.randomUUID()
   const versionId = crypto.randomUUID()
-  await env.DB.prepare(
-    `INSERT INTO packs (
-      id, slug, title, description, kind, category, owner_type, owner_user_id,
-      listing_status, listing_fee_cents_paid, commission_bps, review_notes,
-      price_snapshot_cents, price_update_pass_cents, featured_eligible, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'platform', NULL, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
+  // Batched so a pack can never be left without its initial version, which every read
+  // path treats as a broken record.
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO packs (
+        id, slug, title, description, kind, category, owner_type, owner_user_id,
+        listing_status, listing_fee_cents_paid, commission_bps, review_notes,
+        price_snapshot_cents, price_update_pass_cents, featured_eligible, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'platform', NULL, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
       packId,
       parsed.value.slug,
       parsed.value.title,
@@ -215,14 +220,12 @@ export async function createAdminPack(env: Env, input: unknown): Promise<{ pack?
       parsed.value.featuredEligible ? 1 : 0,
       now,
       now,
-    )
-    .run()
-  await env.DB.prepare(
-    `INSERT INTO pack_versions (id, pack_id, version, changelog, zip_r2_key, published_at)
-     VALUES (?, ?, 'v1', ?, ?, ?)`,
-  )
-    .bind(versionId, packId, parsed.value.changelog, `packs/${parsed.value.slug}/v/v1/pack.zip`, now)
-    .run()
+    ),
+    env.DB.prepare(
+      `INSERT INTO pack_versions (id, pack_id, version, changelog, zip_r2_key, published_at)
+       VALUES (?, ?, 'v1', ?, ?, ?)`,
+    ).bind(versionId, packId, parsed.value.changelog, `packs/${parsed.value.slug}/v/v1/pack.zip`, now),
+  ])
   const pack = await getAdminPack(env, parsed.value.slug)
   return { pack: pack ?? undefined }
 }
@@ -273,28 +276,64 @@ export async function updateAdminPack(
   return { pack: pack ?? undefined }
 }
 
-export async function deleteAdminPack(env: Env, slug: string): Promise<{ ok?: true; error?: string; status?: number }> {
+/** Removes every R2 object stored under a pack prefix, paging through the listing. */
+async function deletePackObjects(env: Env, slug: string): Promise<number> {
+  const prefix = `packs/${slug}/`
+  let cursor: string | undefined
+  let removed = 0
+  do {
+    const listing = await env.AUDIO.list({ prefix, cursor })
+    const keys = listing.objects.map((object) => object.key)
+    if (keys.length > 0) {
+      await env.AUDIO.delete(keys)
+      removed += keys.length
+    }
+    cursor = listing.truncated ? listing.cursor : undefined
+  } while (cursor)
+  return removed
+}
+
+export type DeletePackResult =
+  | { ok: true; archived: false; objectsRemoved: number }
+  | { ok: true; archived: true; purchases: number }
+  | { ok: false; error: string; status: number }
+
+/**
+ * Deleting a pack that has been paid for would destroy the purchase record behind that
+ * money and silently revoke the buyer's licence, so a sold pack is delisted instead of
+ * removed. Only packs nobody has bought are truly deleted, along with their R2 objects —
+ * leaving those behind both leaks storage and lets a reused slug serve a stale archive.
+ */
+export async function deleteAdminPack(env: Env, slug: string): Promise<DeletePackResult> {
   const pack = await env.DB.prepare(`SELECT id FROM packs WHERE slug = ?`).bind(slug).first<{ id: string }>()
-  if (!pack) return { error: 'Pack not found', status: 404 }
-  await env.DB.prepare(
-    `DELETE FROM track_tags WHERE track_id IN (
-      SELECT t.id FROM tracks t JOIN pack_versions pv ON pv.id = t.pack_version_id WHERE pv.pack_id = ?
-    )`,
-  )
+  if (!pack) return { ok: false, error: 'Pack not found', status: 404 }
+
+  const sold = await env.DB.prepare(`SELECT COUNT(*) as count FROM purchases WHERE pack_id = ?`)
     .bind(pack.id)
-    .run()
-  await env.DB.prepare(
-    `DELETE FROM tracks WHERE pack_version_id IN (SELECT id FROM pack_versions WHERE pack_id = ?)`,
-  )
-    .bind(pack.id)
-    .run()
-  await env.DB.prepare(`DELETE FROM pack_versions WHERE pack_id = ?`).bind(pack.id).run()
-  await env.DB.prepare(`DELETE FROM entitlements WHERE pack_id = ?`).bind(pack.id).run()
-  await env.DB.prepare(`DELETE FROM purchases WHERE pack_id = ?`).bind(pack.id).run()
-  await env.DB.prepare(`DELETE FROM download_events WHERE pack_id = ?`).bind(pack.id).run()
-  await env.DB.prepare(`DELETE FROM listing_reviews WHERE pack_id = ?`).bind(pack.id).run()
-  await env.DB.prepare(`DELETE FROM packs WHERE id = ?`).bind(pack.id).run()
-  return { ok: true }
+    .first<{ count: number }>()
+  const purchases = Number(sold?.count ?? 0)
+  if (purchases > 0) {
+    await env.DB.prepare(`UPDATE packs SET listing_status = 'rejected', featured_eligible = 0, updated_at = ? WHERE id = ?`)
+      .bind(Date.now(), pack.id)
+      .run()
+    return { ok: true, archived: true, purchases }
+  }
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM track_tags WHERE track_id IN (
+        SELECT t.id FROM tracks t JOIN pack_versions pv ON pv.id = t.pack_version_id WHERE pv.pack_id = ?
+      )`,
+    ).bind(pack.id),
+    env.DB.prepare(`DELETE FROM tracks WHERE pack_version_id IN (SELECT id FROM pack_versions WHERE pack_id = ?)`).bind(pack.id),
+    env.DB.prepare(`DELETE FROM pack_versions WHERE pack_id = ?`).bind(pack.id),
+    env.DB.prepare(`DELETE FROM entitlements WHERE pack_id = ?`).bind(pack.id),
+    env.DB.prepare(`DELETE FROM download_events WHERE pack_id = ?`).bind(pack.id),
+    env.DB.prepare(`DELETE FROM listing_reviews WHERE pack_id = ?`).bind(pack.id),
+    env.DB.prepare(`DELETE FROM packs WHERE id = ?`).bind(pack.id),
+  ])
+  const objectsRemoved = await deletePackObjects(env, slug)
+  return { ok: true, archived: false, objectsRemoved }
 }
 
 export async function createAdminTrack(
@@ -335,13 +374,19 @@ export async function deleteAdminTrack(
   if (!pack) return { error: 'Pack not found', status: 404 }
   const version = await currentVersion(env, pack.id)
   if (!version) return { error: 'Pack version is missing', status: 404 }
-  const track = await env.DB.prepare(`SELECT id FROM tracks WHERE id = ? AND pack_version_id = ?`)
+  const track = await env.DB.prepare(
+    `SELECT id, full_r2_key, preview_r2_key FROM tracks WHERE id = ? AND pack_version_id = ?`,
+  )
     .bind(trackId, version.id)
-    .first()
+    .first<{ id: string; full_r2_key: string | null; preview_r2_key: string | null }>()
   if (!track) return { error: 'Track not found', status: 404 }
-  await env.DB.prepare(`DELETE FROM track_tags WHERE track_id = ?`).bind(trackId).run()
-  await env.DB.prepare(`DELETE FROM tracks WHERE id = ?`).bind(trackId).run()
-  await env.DB.prepare(`UPDATE packs SET updated_at = ? WHERE id = ?`).bind(Date.now(), pack.id).run()
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM track_tags WHERE track_id = ?`).bind(trackId),
+    env.DB.prepare(`DELETE FROM tracks WHERE id = ?`).bind(trackId),
+    env.DB.prepare(`UPDATE packs SET updated_at = ? WHERE id = ?`).bind(Date.now(), pack.id),
+  ])
+  const orphaned = [...new Set([track.full_r2_key, track.preview_r2_key].filter((key): key is string => Boolean(key)))]
+  if (orphaned.length > 0) await env.AUDIO.delete(orphaned)
   return { pack: (await getAdminPack(env, slug)) ?? undefined }
 }
 
@@ -374,13 +419,11 @@ export async function storeTrackAudio(
     return { error: 'Audio file type does not match its contents', status: 400 }
   }
   const hash = await sha256Hex(bytes)
-  const hashes = await env.DB.prepare(`SELECT content_sha256 as hash FROM tracks WHERE content_sha256 IS NOT NULL AND id != ?`)
-    .bind(trackId)
-    .all<{ hash: string }>()
-  const exact = findExactDuplicate(
-    (hashes.results ?? []).map((row) => row.hash),
-    hash,
-  )
+  // One indexed probe against tracks_sha256_idx; pulling the whole catalogue of hashes
+  // into the worker to scan in JS cost memory proportional to the catalogue per upload.
+  const exact = await env.DB.prepare(`SELECT id FROM tracks WHERE content_sha256 = ? AND id != ? LIMIT 1`)
+    .bind(hash, trackId)
+    .first<{ id: string }>()
   const decision = shouldAutoRejectDuplicate({ exactHashHit: Boolean(exact), chromaprintHit: false, clapCosine: null })
   if (decision === 'reject') return { error: 'This file is already in the catalog', status: 409 }
   const versionLabel = String(version.version)

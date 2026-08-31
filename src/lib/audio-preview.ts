@@ -94,6 +94,8 @@ export function stopAllPreviews() {
     activeAudio.pause()
     activeAudio.currentTime = 0
   }
+  activeAudio = null
+  currentSrc = null
   isPlaying = false
   notify()
 }

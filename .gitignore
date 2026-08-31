@@ -16,3 +16,4 @@ coverage
 worker-configuration.d.ts
 .seed-output
 ingest-output
+demo-output

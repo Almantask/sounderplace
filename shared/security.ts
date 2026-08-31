@@ -285,6 +285,35 @@ export function pickVerifiedGithubEmail(profileEmail: string | undefined, emails
   return (primary?.email ?? verified[0]?.email ?? null)?.toLowerCase() ?? null
 }
 
+/**
+ * Catches the deploy that ships the committed loopback `APP_URL` to production. That value
+ * silently disables the Secure cookie flag and makes every CORS origin fail, and nothing
+ * else in the request path notices, so the worker refuses to serve instead.
+ *
+ * Configured Stripe keys are the signal that this is a real deployment rather than a
+ * local dev run against the checked-in defaults.
+ */
+export function appUrlConfigError(env: {
+  APP_URL?: string
+  STRIPE_SECRET_KEY?: string
+}): string | null {
+  if (!env.APP_URL) return 'APP_URL is not configured'
+  let parsed: URL
+  try {
+    parsed = new URL(env.APP_URL)
+  } catch {
+    return 'APP_URL is not a valid URL'
+  }
+  if (!env.STRIPE_SECRET_KEY) return null
+  if (isLoopbackHostname(parsed.hostname)) {
+    return 'APP_URL points at loopback while Stripe is configured; set it to the public origin'
+  }
+  if (parsed.protocol !== 'https:') {
+    return 'APP_URL must use https in a deployment with Stripe configured'
+  }
+  return null
+}
+
 export function apiSecurityHeaders(appUrl: string): Record<string, string> {
   const headers: Record<string, string> = {
     'X-Content-Type-Options': 'nosniff',
@@ -303,6 +332,7 @@ export class SlidingWindowLimiter {
   private readonly hits = new Map<string, number[]>()
   private readonly max: number
   private readonly windowMs: number
+  private lastSweep = 0
 
   constructor(max: number, windowMs: number) {
     this.max = max
@@ -310,6 +340,7 @@ export class SlidingWindowLimiter {
   }
 
   allow(key: string, now = Date.now()): boolean {
+    this.evictExpired(now)
     const recent = (this.hits.get(key) ?? []).filter((at) => now - at < this.windowMs)
     if (recent.length >= this.max) {
       this.hits.set(key, recent)
@@ -318,6 +349,18 @@ export class SlidingWindowLimiter {
     recent.push(now)
     this.hits.set(key, recent)
     return true
+  }
+
+  /**
+   * Without this the map only ever grows: it is keyed by path + client IP, and a key whose
+   * caller never returns is never revisited, so its entry lives as long as the isolate.
+   */
+  private evictExpired(now: number): void {
+    if (now - this.lastSweep < this.windowMs) return
+    this.lastSweep = now
+    for (const [key, hits] of this.hits) {
+      if (hits.every((at) => now - at >= this.windowMs)) this.hits.delete(key)
+    }
   }
 }
 

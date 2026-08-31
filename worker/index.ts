@@ -7,6 +7,7 @@ import {
   allowUnpaidDevGrant,
   allowedCorsOrigin,
   apiSecurityHeaders,
+  appUrlConfigError,
   audioContentType,
   clientIp,
   downloadFilename,
@@ -19,7 +20,7 @@ import {
   requestHostname,
   SlidingWindowLimiter,
 } from '../shared/security.ts'
-import { ECOSYSTEM_LINKS } from '../shared/starter-library.ts'
+import { ECOSYSTEM_LINKS } from '../shared/ecosystem.ts'
 import {
   clearOauthStateCookie,
   clearSessionCookie,
@@ -56,6 +57,7 @@ import {
   getPack,
   grantEntitlement,
   listPacks,
+  packFiltersFromUrl,
   recordDownload,
 } from './lib/catalog.ts'
 import { ensureSeed } from './lib/seed.ts'
@@ -64,6 +66,14 @@ import { licenseUnitAmount, stripeRequest, verifyStripeSignature } from './lib/s
 const app = new Hono<{ Bindings: Env; Variables: { user: AuthUser | null } }>()
 const authLimiter = new SlidingWindowLimiter(10, 15 * 60 * 1000)
 const actionLimiter = new SlidingWindowLimiter(8, 15 * 60 * 1000)
+
+// Refuse to serve a deployment whose APP_URL cannot support secure cookies or CORS,
+// rather than silently handing out non-Secure sessions.
+app.use('*', async (c, next) => {
+  const misconfigured = appUrlConfigError(c.env)
+  if (misconfigured) return c.json({ error: `Server misconfigured: ${misconfigured}` }, 500)
+  await next()
+})
 
 app.get('/', (c) => c.json({ ok: true, name: 'sunderplace-api' }))
 
@@ -156,7 +166,7 @@ app.post('/api/auth/sign-in', rateLimit(authLimiter, 'AUTH_RATE_LIMITER'), async
      FROM user JOIN account ON account.user_id = user.id
      WHERE user.email = ? AND account.provider_id = 'credential'`,
   )
-    .bind(body.email.toLowerCase())
+    .bind(body.email.trim().toLowerCase())
     .first<{ id: string; email: string; name: string; email_verified: number; password: string }>()
   const passwordOk = await verifyPasswordOrDummy(body.password, row?.password)
   if (!row || !passwordOk) {
@@ -289,29 +299,25 @@ app.get('/api/auth/github/callback', rateLimit(authLimiter, 'AUTH_RATE_LIMITER')
   return c.redirect(`${c.env.APP_URL}/library`)
 })
 
-function requireAdmin(c: { get: (key: 'user') => AuthUser | null; env: Env; req: { raw: Request }; json: (data: unknown, status?: number) => Response }) {
+/**
+ * One gate in front of every admin route. Repeating the check inside each handler made it
+ * possible to add a new admin route and silently forget it.
+ */
+app.use('/api/admin/*', async (c, next) => {
   const gate = adminGate(c.get('user'), c.env, c.req.raw)
   if (!gate.ok) return jsonError(c, gate.error, gate.status)
-  return null
-}
-
-app.get('/api/admin/packs', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
-  return c.json({ packs: await listAdminPacks(c.env) })
+  await next()
 })
 
+app.get('/api/admin/packs', async (c) => c.json({ packs: await listAdminPacks(c.env) }))
+
 app.get('/api/admin/packs/:slug', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const pack = await getAdminPack(c.env, c.req.param('slug'))
   if (!pack) return jsonError(c, 'Pack not found', 404)
   return c.json({ pack })
 })
 
 app.post('/api/admin/packs', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const body = await c.req.json().catch(() => ({}))
   const result = await createAdminPack(c.env, body)
   if (result.error) return jsonError(c, result.error, result.status)
@@ -319,8 +325,6 @@ app.post('/api/admin/packs', async (c) => {
 })
 
 app.patch('/api/admin/packs/:slug', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const body = await c.req.json().catch(() => ({}))
   const result = await updateAdminPack(c.env, c.req.param('slug'), body)
   if (result.error) return jsonError(c, result.error, result.status)
@@ -328,16 +332,17 @@ app.patch('/api/admin/packs/:slug', async (c) => {
 })
 
 app.delete('/api/admin/packs/:slug', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const result = await deleteAdminPack(c.env, c.req.param('slug'))
-  if (result.error) return jsonError(c, result.error, result.status)
-  return c.json({ ok: true })
+  if (!result.ok) return jsonError(c, result.error, result.status)
+  // A pack with purchases behind it is delisted rather than deleted, so say which happened.
+  return c.json(
+    result.archived
+      ? { ok: true, archived: true, purchases: result.purchases }
+      : { ok: true, archived: false, objectsRemoved: result.objectsRemoved },
+  )
 })
 
 app.post('/api/admin/packs/:slug/tracks', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const body = await c.req.json().catch(() => ({}))
   const result = await createAdminTrack(c.env, c.req.param('slug'), body)
   if (result.error) return jsonError(c, result.error, result.status)
@@ -345,16 +350,12 @@ app.post('/api/admin/packs/:slug/tracks', async (c) => {
 })
 
 app.delete('/api/admin/packs/:slug/tracks/:trackId', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const result = await deleteAdminTrack(c.env, c.req.param('slug'), c.req.param('trackId'))
   if (result.error) return jsonError(c, result.error, result.status)
   return c.json({ pack: result.pack })
 })
 
 app.put('/api/admin/packs/:slug/tracks/:trackId/audio', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const file = await readUploadFile(await c.req.formData())
   if (!file) return jsonError(c, 'Audio file is required')
   const result = await storeTrackAudio(c.env, c.req.param('slug'), c.req.param('trackId'), file)
@@ -363,8 +364,6 @@ app.put('/api/admin/packs/:slug/tracks/:trackId/audio', async (c) => {
 })
 
 app.put('/api/admin/packs/:slug/archive', async (c) => {
-  const denied = requireAdmin(c)
-  if (denied) return denied
   const file = await readUploadFile(await c.req.formData())
   if (!file) return jsonError(c, 'Archive file is required')
   const result = await storePackArchive(c.env, c.req.param('slug'), file)
@@ -373,15 +372,14 @@ app.put('/api/admin/packs/:slug/archive', async (c) => {
 })
 
 app.get('/api/packs', async (c) => {
-  const packs = await listPacks(c.env, new URL(c.req.url))
+  const packs = await listPacks(c.env, packFiltersFromUrl(new URL(c.req.url)))
   return c.json({ packs })
 })
 
 app.get('/api/featured', async (c) => {
-  await ensureSeed(c.env.DB)
   const ids = await featuredPackIds(c.env)
   if (ids.length === 0) return c.json({ packs: [] })
-  const packs = await listPacks(c.env, new URL(c.env.APP_URL))
+  const packs = await listPacks(c.env)
   return c.json({ packs: packs.filter((pack) => ids.includes(pack.id)) })
 })
 
@@ -411,16 +409,32 @@ app.get('/api/library', async (c) => {
   const user = c.get('user')
   if (!user) return jsonError(c, 'Sign in required', 401)
   await ensureSeed(c.env.DB)
+  // Free live packs are in everyone's library, but only for packs the user has no
+  // entitlement row for -- otherwise the same pack renders twice. The synthetic row also
+  // has to carry the pack's real current version: hardcoding 'v1' pointed the download
+  // link at an archive that no longer exists once a free pack shipped v2.
   const rows = await c.env.DB.prepare(
-    `SELECT e.license, e.snapshot_version as snapshotVersion, p.slug, p.title, p.kind, p.category,
-            (SELECT version FROM pack_versions pv WHERE pv.pack_id = p.id ORDER BY published_at DESC LIMIT 1) as currentVersion
-     FROM entitlements e JOIN packs p ON p.id = e.pack_id
-     WHERE e.user_id = ?
-     UNION
-     SELECT 'snapshot' as license, 'v1' as snapshotVersion, p.slug, p.title, p.kind, p.category,
-            (SELECT version FROM pack_versions pv WHERE pv.pack_id = p.id ORDER BY published_at DESC LIMIT 1) as currentVersion
+    `WITH current_version AS (
+       SELECT pv.pack_id, pv.version
+       FROM pack_versions pv
+       WHERE pv.published_at = (
+         SELECT MAX(pv2.published_at) FROM pack_versions pv2 WHERE pv2.pack_id = pv.pack_id
+       )
+     )
+     SELECT e.license, e.snapshot_version as snapshotVersion, p.slug, p.title, p.kind, p.category,
+            cv.version as currentVersion
+     FROM entitlements e
+     JOIN packs p ON p.id = e.pack_id
+     JOIN current_version cv ON cv.pack_id = p.id
+     WHERE e.user_id = ?1
+     UNION ALL
+     SELECT 'snapshot' as license, cv.version as snapshotVersion, p.slug, p.title, p.kind, p.category,
+            cv.version as currentVersion
      FROM packs p
-     WHERE p.price_snapshot_cents = 0 AND p.price_update_pass_cents = 0 AND p.listing_status = 'live'`,
+     JOIN current_version cv ON cv.pack_id = p.id
+     WHERE p.price_snapshot_cents = 0 AND p.price_update_pass_cents = 0 AND p.listing_status = 'live'
+       AND NOT EXISTS (SELECT 1 FROM entitlements e2 WHERE e2.pack_id = p.id AND e2.user_id = ?1)
+     ORDER BY title`,
   )
     .bind(user.id)
     .all()

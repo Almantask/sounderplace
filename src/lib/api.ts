@@ -74,7 +74,10 @@ export const api = {
   updateAdminPack: (slug: string, body: Record<string, unknown>) =>
     request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteAdminPack: (slug: string) =>
-    request<{ ok: true }>(`/api/admin/packs/${slug}`, { method: 'DELETE' }),
+    request<{ ok: true; archived: boolean; purchases?: number; objectsRemoved?: number }>(
+      `/api/admin/packs/${slug}`,
+      { method: 'DELETE' },
+    ),
   createAdminTrack: (slug: string, body: Record<string, unknown>) =>
     request<{ pack: AdminPackDetail }>(`/api/admin/packs/${slug}/tracks`, {
       method: 'POST',

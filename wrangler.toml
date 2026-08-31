@@ -3,6 +3,9 @@ main = "worker/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Local development only. Deployments use [env.production] below, whose APP_URL must be the
+# public https origin: a loopback value silently drops the Secure cookie flag and rejects
+# every CORS origin, so the worker refuses to serve once Stripe is configured alongside it.
 [vars]
 APP_URL = "http://127.0.0.1:5173"
 
@@ -23,5 +26,30 @@ database_id = "local-sunderplace"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "sunderplace-audio"
+
+# Wrangler does not inherit vars or bindings into a named environment, so production
+# repeats all of them. Deploy with `wrangler deploy --env production`.
+[env.production.vars]
+APP_URL = "https://sunderplace.example"
+
+[[env.production.ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+[[env.production.ratelimits]]
+name = "ACTION_RATE_LIMITER"
+namespace_id = "1002"
+simple = { limit = 8, period = 60 }
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "sunderplace"
+database_id = "local-sunderplace"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
 binding = "AUDIO"
 bucket_name = "sunderplace-audio"

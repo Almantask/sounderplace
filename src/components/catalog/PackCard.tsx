@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { downloadCountLabel } from '@shared/downloads'
 import { formatUsd, isFreePack } from '@shared/pricing'
 import type { PackSummary } from '@shared/types'
 import { Badge } from '@/components/ui/badge'
@@ -22,21 +23,23 @@ export function PackCard({ pack }: { pack: PackSummary & { moods?: string[]; ins
       </div>
       <p className="mt-3 text-sm text-muted">{pack.description}</p>
       <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-line/60 bg-leather/40 p-3">
-        <div>
-          <p className="text-xs text-muted">
-            Preview track: <strong className="text-ink">{pack.previewTrack?.name ?? `${pack.title} 01`}</strong>
-          </p>
-          <p className="text-[11px] text-muted">
-            {pack.previewTrack?.durationSeconds ?? (pack.kind === 'fx' ? 3 : 90)}s · Full track
-          </p>
-        </div>
-        <PreviewPlayer
-          name={pack.previewTrack?.name ?? `${pack.title} 01`}
-          src={pack.previewTrack?.previewUrl ?? `/api/previews/track_${pack.slug}_01`}
-        />
+        {pack.previewTrack ? (
+          <>
+            <div>
+              <p className="text-xs text-muted">
+                Preview track: <strong className="text-ink">{pack.previewTrack.name}</strong>
+              </p>
+              <p className="text-[11px] text-muted">{pack.previewTrack.durationSeconds}s · Full track</p>
+            </div>
+            <PreviewPlayer name={pack.previewTrack.name} src={pack.previewTrack.previewUrl} />
+          </>
+        ) : (
+          <p className="text-xs text-muted">No preview track has been ingested for this pack yet.</p>
+        )}
       </div>
       <p className="mt-4 text-xs text-muted">
-        {pack.trackCount} tracks · {pack.category} · v{pack.currentVersion.replace(/^v/, '')}
+        {pack.trackCount} tracks · {pack.category} · v{pack.currentVersion.replace(/^v/, '')} ·{' '}
+        {downloadCountLabel(pack.downloadCount)}
       </p>
     </Card>
   )

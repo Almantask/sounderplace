@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { downloadCountLabel } from '@shared/downloads'
 import { formatUsd } from '@shared/pricing'
 import type { PackDetail } from '@shared/types'
 import { TrackList } from '@/components/catalog/TrackList'
@@ -71,6 +72,10 @@ export function PackPage() {
         </p>
         <h1 className="font-display text-5xl">{pack.title}</h1>
         <p className="max-w-3xl text-muted">{pack.description}</p>
+        <p className="text-sm text-muted">
+          {pack.trackCount} tracks · v{pack.currentVersion.replace(/^v/, '')} ·{' '}
+          {downloadCountLabel(pack.downloadCount)}
+        </p>
         <p className="text-sm text-gold">{pack.aiDisclosure}</p>
         <p className="text-sm text-muted">{pack.buyerLicense}</p>
       </header>
